@@ -3,7 +3,7 @@ bottom-left corner of the drawing's bounding box is (0, 0)."""
 import os
 import numpy as np
 
-CURVE_TOL = 0.25  # max chord length (drawing units, usually mm) when flattening curves
+CURVE_TOL = 0.05  # max distance (drawing units, usually mm) between a curve and its straight-line approximation
 
 
 def _clean(pts):
@@ -17,10 +17,39 @@ def _clean(pts):
     return out if len(out) >= 3 else None
 
 
+def _segments_needed(seg, tol):
+    """How many straight pieces a curve needs to stay within `tol` of the true curve
+    (Wang's formula for Beziers, sagitta for arcs)."""
+    from svgelements import Arc, CubicBezier, QuadraticBezier
+
+    def p(q):
+        return np.array([q.x, q.y])
+
+    if isinstance(seg, CubicBezier):
+        a, b, c, d = p(seg.start), p(seg.control1), p(seg.control2), p(seg.end)
+        m = max(np.hypot(*(a - 2 * b + c)), np.hypot(*(b - 2 * c + d)))
+        n = np.sqrt(0.75 * m / tol)
+    elif isinstance(seg, QuadraticBezier):
+        a, b, c = p(seg.start), p(seg.control), p(seg.end)
+        n = np.sqrt(0.25 * np.hypot(*(a - 2 * b + c)) / tol)
+    elif isinstance(seg, Arc):
+        r = max(abs(seg.rx), abs(seg.ry), 1e-9)
+        step = 2 * np.arccos(max(-1.0, 1 - tol / r))
+        n = abs(seg.sweep) / max(step, 1e-6)
+    else:
+        n = 16
+    return int(min(1000, max(1, np.ceil(n))))
+
+
 def load_svg(path):
     from svgelements import SVG, Shape, Path, Move, Line, Close, Text
 
-    svg = SVG.parse(path, ppi=25.4)  # applies all transforms; ppi=25.4 -> 1 unit = 1 mm
+    svg = SVG.parse(path)  # applies all transforms
+    # Work in the document's own user units (the viewBox), which Inkscape / CorelDRAW write in
+    # the document unit, normally mm. svgelements scales them to the width/height attribute.
+    scale = 1.0
+    if svg.viewbox is not None and svg.viewbox.width and svg.width:
+        scale = svg.viewbox.width / svg.width
     contours = []
     for el in svg.elements():
         if isinstance(el, Text):
@@ -41,11 +70,9 @@ def load_svg(path):
                     if seg.end is not None:
                         pts.append((seg.end.x, seg.end.y))
                 else:  # curves / arcs
-                    n = max(4, int(np.ceil(seg.length() / CURVE_TOL)))
-                    for t in np.linspace(0, 1, n + 1)[1:]:
-                        q = seg.point(t)
-                        pts.append((q.x, q.y))
-            pts = [(x, -y) for x, y in pts]  # SVG y points down; flip so y points up
+                    n = _segments_needed(seg, CURVE_TOL / scale)
+                    pts.extend(map(tuple, seg.npoint(np.linspace(0, 1, n + 1)[1:])))
+            pts = [(x * scale, -y * scale) for x, y in pts]  # SVG y points down; flip so y points up
             c = _clean(pts)
             if c:
                 contours.append(c)

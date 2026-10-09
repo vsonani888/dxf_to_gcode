@@ -130,34 +130,46 @@ class Router:
         return [a, b]
 
 
-def order_parts(parts, start):
-    """Visiting order: nearest-neighbour tour from `start` and back, improved with 2-opt."""
-    if len(parts) <= 1:
-        return list(parts)
-    geoms = [Point(start)] + [p.poly for p in parts]
-    n = len(geoms)
-    D = [[geoms[i].distance(geoms[j]) for j in range(n)] for i in range(n)]
+def spanning_tree(n, link):
+    """Prim's minimum spanning tree over nodes 0..n-1, rooted at node 0.
 
-    tour, left = [0], set(range(1, n))
+    link(i, j) -> (length, path) or None when the straight connection is blocked.
+    blocked(i, j) is only consulted (it is expensive - it routes around obstacles)
+    when no straight connection to the remaining nodes exists.
+    Returns a list of (parent, child, path) in the order the nodes were added.
+    """
+    in_tree, edges = [0], []
+    left = set(range(1, n))
     while left:
-        nxt = min(left, key=lambda j: D[tour[-1]][j])
-        tour.append(nxt)
-        left.remove(nxt)
-    tour.append(0)
-
-    improved = True
-    while improved:
-        improved = False
-        for i in range(1, len(tour) - 2):
-            for j in range(i + 1, len(tour) - 1):
-                a, b, c, d = tour[i - 1], tour[i], tour[j], tour[j + 1]
-                if D[a][c] + D[b][d] < D[a][b] + D[c][d] - 1e-9:
-                    tour[i:j + 1] = reversed(tour[i:j + 1])
-                    improved = True
-    return [parts[k - 1] for k in tour[1:-1]]
+        best = None
+        for i in in_tree:
+            for j in left:
+                e = link(i, j, route=False)
+                if e and (best is None or e[0] < best[0]):
+                    best = (e[0], i, j, e[1])
+        if best is None:  # everything left is hidden behind other parts - route around them
+            for i in in_tree:
+                for j in left:
+                    e = link(i, j, route=True)
+                    if best is None or e[0] < best[0]:
+                        best = (e[0], i, j, e[1])
+        _, i, j, path = best
+        edges.append((i, j, path))
+        in_tree.append(j)
+        left.remove(j)
+    return edges
 
 
 class Planner:
+    """Builds the cut as a tree of detours.
+
+    The wire cuts an outline; at the point closest to a neighbouring shape it branches off
+    (travel), cuts that shape (which may branch further), comes back along the same line and
+    carries on with the outline it was cutting. Holes are reached the same way via bridges.
+    The branches form a minimum spanning tree, so the total connecting length is as short as
+    the shapes' layout allows, and the wire always ends where it started: at the origin.
+    """
+
     def __init__(self, contours, origin=(0.0, 0.0), clearance=None):
         allpts = [p for c in contours for p in c] + [origin]
         xs, ys = zip(*allpts)
@@ -173,8 +185,15 @@ class Planner:
         minx, miny, maxx, maxy = self.bounds
         m = max(maxx - minx, maxy - miny)
         world = box(minx - m, miny - m, maxx + m, maxy + m)
+        # detours[id(contour)] = [(point on contour, kind, path, target contour, point on target)]
+        # detours[None] = branches leaving the origin
+        self.detours = {}
+        self._connect_region(world, self.roots, None)
         self.moves = []
-        self._visit_region(world, self.roots, self.origin)
+        for _, kind, path, target, b in self.detours.get(None, []):
+            self._emit(kind, path)
+            self._cut_contour(target, b)
+            self._emit(kind, path[::-1])
         return self.moves
 
     def _emit(self, kind, coords):
@@ -186,26 +205,41 @@ class Planner:
         else:
             self.moves.append((kind, coords))
 
-    def _visit_region(self, container, parts, start):
-        """Cut every part lying in `container` (free foam), starting and ending at `start`."""
+    def _connect_region(self, container, parts, root):
+        """Link all parts lying in `container` into a tree hanging off `root`
+        (the origin when root is None, otherwise the hole contour they sit in)."""
         if not parts:
             return
         router = Router(container, [p.poly for p in parts], self.clearance, self.eps)
-        pos = start
-        for part in order_parts(parts, start):
-            entry = nearest_points(part.poly.exterior, Point(pos))[0].coords[0]
-            self._emit("travel", router.route(pos, entry))
-            self._cut_part(part, entry)
-            pos = entry
-        self._emit("travel", router.route(pos, start))
+        geoms = [Point(self.origin) if root is None else root.poly.exterior] + [p.poly.exterior for p in parts]
+        owners = [root] + list(parts)
+        cache = {}
 
-    def _cut_part(self, part, entry):
-        # Choose bridges (cut-ins) so every hole is reachable: grow from the outline, always
-        # taking the shortest bridge that stays inside the part material.
+        def link(i, j, route):
+            key = (i, j)
+            if key not in cache:
+                a, b = (p.coords[0] for p in nearest_points(geoms[i], geoms[j]))
+                cache[key] = (math.dist(a, b), [a, b]) if router.visible(a, b) else None
+            if cache[key] is None and route:
+                a, b = (p.coords[0] for p in nearest_points(geoms[i], geoms[j]))
+                path = router.route(a, b)
+                cache[key] = (LineString(path).length if len(path) > 1 else 0.0, path)
+            return cache[key]
+
+        for i, j, path in spanning_tree(len(geoms), link):
+            owner = owners[i]
+            self.detours.setdefault(None if owner is None else id(owner), []).append(
+                (path[0], "travel", path, owners[j], path[-1]))
+
+        for part in parts:
+            self._connect_holes(part)
+
+    def _connect_holes(self, part):
+        """Bridges (cut-ins) so every hole is reachable: grow from the outline, always taking
+        the shortest bridge that stays inside the part material."""
         holes = part.children
         material = Polygon(part.poly.exterior.coords, [h.poly.exterior.coords for h in holes])
         material_ok = prep(material.buffer(self.eps * 10))
-        bridges = {}
         connected, remaining = [part], list(holes)
         while remaining:
             best = None
@@ -222,24 +256,25 @@ class Planner:
                 a, b = nearest_points(part.poly.exterior, h.poly.exterior)
                 best = (0, part, h, a.coords[0], b.coords[0])
             _, c, h, a, b = best
-            bridges.setdefault(id(c), []).append((a, h, b))
+            self.detours.setdefault(id(c), []).append((a, "bridge", [a, b], h, b))
             connected.append(h)
             remaining.remove(h)
-        self._cut_contour(part, entry, bridges)
+        for h in holes:  # parts sitting inside a hole hang off that hole's outline
+            self._connect_region(h.poly, h.children, h)
 
-    def _cut_contour(self, contour, start, bridges):
+    def _cut_contour(self, contour, start):
+        """Cut one closed outline starting and ending at `start`, taking every detour on the way."""
         ring = LineString(contour.poly.exterior.coords)
         L = ring.length
         t0 = ring.project(Point(start))
-        excursions = sorted((((ring.project(Point(a)) - t0) % L, a, h, b)
-                             for a, h, b in bridges.get(id(contour), [])), key=lambda e: e[0])
+        detours = sorted((((ring.project(Point(a)) - t0) % L, kind, path, target, b)
+                          for a, kind, path, target, b in self.detours.get(id(contour), [])),
+                         key=lambda d: d[0])
         cur = 0.0
-        for r, a, h, b in excursions:
+        for r, kind, path, target, b in detours:
             self._emit("cut", ring_part(ring, t0 + cur, t0 + r))
-            self._emit("bridge", [a, b])
-            self._cut_contour(h, b, bridges)              # cut the hole outline
-            if h.children:                                # parts sitting inside the hole
-                self._visit_region(h.poly, h.children, b)
-            self._emit("bridge", [b, a])
+            self._emit(kind, path)
+            self._cut_contour(target, b)
+            self._emit(kind, path[::-1])
             cur = r
         self._emit("cut", ring_part(ring, t0 + cur, t0 + L))
