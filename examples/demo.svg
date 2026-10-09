@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300mm" height="175mm" viewBox="0 0 300 175">
+  <!-- plain circles -->
+  <circle cx="30" cy="140" r="18"/>
+  <circle cx="75" cy="150" r="10"/>
+
+  <!-- block with two holes (like a "B" / "8") -->
+  <path fill-rule="evenodd" d="M15 15 H85 V85 H15 Z  M25 25 H45 V75 H25 Z  M55 25 H75 V75 H55 Z"/>
+
+  <!-- letter O: outer + inner contour -->
+  <path fill-rule="evenodd" d="M122 110 a28 34 0 1 0 56 0 a28 34 0 1 0 -56 0 Z  M135 110 a15 22 0 1 0 30 0 a15 22 0 1 0 -30 0 Z"/>
+
+  <!-- target: ring with a separate disc sitting inside its hole -->
+  <path fill-rule="evenodd" d="M120 38 a30 30 0 1 0 60 0 a30 30 0 1 0 -60 0 Z  M128 38 a22 22 0 1 0 44 0 a22 22 0 1 0 -44 0 Z"/>
+  <circle cx="150" cy="38" r="12"/>
+
+  <!-- U shape with a small disc in its notch (wire must route in through the opening) -->
+  <path d="M200 20 L230 20 L230 60 L250 60 L250 20 L280 20 L280 90 L200 90 Z"/>
+  <circle cx="240" cy="35" r="6"/>
+
+  <!-- letter A -->
+  <path fill-rule="evenodd" d="M210 165 L232 100 L258 100 L280 165 L264 165 L259 148 L231 148 L226 165 Z  M237 135 L253 135 L245 112 Z"/>
+</svg>
