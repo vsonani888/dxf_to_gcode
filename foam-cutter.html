@@ -158,9 +158,15 @@ textarea { width: 100%; font: 12px ui-monospace, Consolas, monospace; border: 1p
   <form method="dialog" id="settingsForm">
     <h3>Settings</h3>
     <fieldset>
+      <legend>Display</legend>
+      <div class="field"><label for="setUnits">Units on screen</label>
+        <select id="setUnits"><option value="in">Inches</option><option value="mm">Millimetres</option></select>
+        <small>Only changes what you see. G-code is always exported in millimetres.</small></div>
+    </fieldset>
+    <fieldset>
       <legend>Machine limits (fail-safe)</legend>
-      <div class="field"><label for="setMaxX">Max X travel (mm)</label><input id="setMaxX" type="number" min="1" step="1"></div>
-      <div class="field"><label for="setMaxY">Max Y travel (mm)</label><input id="setMaxY" type="number" min="1" step="1"></div>
+      <div class="field"><label for="setMaxX">Max X travel (<span class="u">mm</span>)</label><input id="setMaxX" type="number" min="0" step="any"></div>
+      <div class="field"><label for="setMaxY">Max Y travel (<span class="u">mm</span>)</label><input id="setMaxY" type="number" min="0" step="any"></div>
       <div class="field"><small>G-code download is blocked if the toolpath goes outside this area.</small></div>
     </fieldset>
     <fieldset>
@@ -173,8 +179,8 @@ textarea { width: 100%; font: 12px ui-monospace, Consolas, monospace; border: 1p
     </fieldset>
     <fieldset>
       <legend>Path</legend>
-      <div class="field"><label for="setClear">Travel clearance around shapes (mm)</label><input id="setClear" type="number" min="0.1" step="0.1"></div>
-      <div class="field"><label for="setTol">Curve accuracy (mm)</label><input id="setTol" type="number" min="0.005" step="0.005"></div>
+      <div class="field"><label for="setClear">Travel clearance around shapes (<span class="u">mm</span>)</label><input id="setClear" type="number" min="0" step="any"></div>
+      <div class="field"><label for="setTol">Curve accuracy (<span class="u">mm</span>)</label><input id="setTol" type="number" min="0" step="any"></div>
     </fieldset>
     <fieldset>
       <legend>G-code</legend>
@@ -201,6 +207,7 @@ const DEFAULTS = {
   pauseMs: 200, pauseAngle: 30, dwellUnit: 's',
   clearance: 1, curveTol: 0.05,
   feed: 300,
+  units: 'in', // display only; everything is stored and exported in mm
   startGcode: 'G21 ; units: mm\nG90 ; absolute coordinates\nG92 X0 Y0 ; the wire is at the origin',
   endGcode: 'M2 ; end of program',
 };
@@ -786,7 +793,7 @@ function analyzeDrawing(polys, notes) {
     if (p.pts.length === 1) { issues.push({ title: 'Stray node', detail: 'A single point with no line attached.', points: [p.pts[0]], open: p }); continue; }
     if (!p.closed) {
       const gap = dist(p.pts[0], p.pts[p.pts.length - 1]);
-      issues.push({ title: 'Open shape', detail: `Not closed – gap of ${gap.toFixed(2)} mm between its two ends.`, points: [p.pts[0], p.pts[p.pts.length - 1]], open: p });
+      issues.push({ title: 'Open shape', detail: `Not closed – gap of ${fmtFine(gap)} between its two ends.`, points: [p.pts[0], p.pts[p.pts.length - 1]], open: p });
       continue;
     }
     if (p.pts.length < 3 || Math.abs(ringArea(p.pts)) < 1e-6) {
@@ -1071,17 +1078,28 @@ function fmtTime(sec) {
   const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
   return h ? `${h} h ${String(m).padStart(2, '0')} min` : m ? `${m} min ${String(s).padStart(2, '0')} s` : `${s} s`;
 }
-const fmtLen = mm => mm >= 1000 ? (mm / 1000).toFixed(2) + ' m' : mm.toFixed(1) + ' mm';
+const fmtMM = mm => mm >= 1000 ? (mm / 1000).toFixed(2) + ' m' : mm.toFixed(1) + ' mm'; // G-code comments: always mm
+// on-screen lengths follow the Units setting
+const inch = () => S.units === 'in';
+const uName = () => inch() ? 'in' : 'mm';
+const fmtLen = mm => {
+  if (!inch()) return fmtMM(mm);
+  const v = mm / 25.4; return (v >= 1000 ? v.toFixed(0) : v >= 100 ? v.toFixed(1) : v.toFixed(2)) + ' in';
+};
+const fmtDim = mm => inch() ? (mm / 25.4).toFixed(2) + ' in' : mm.toFixed(1) + ' mm';
+const fmtFine = mm => inch() ? (mm / 25.4).toFixed(3) + ' in' : mm.toFixed(2) + ' mm';
+const fmtSize = (w, h) => inch() ? `${(w / 25.4).toFixed(2)} × ${(h / 25.4).toFixed(2)} in` : `${w.toFixed(1)} × ${h.toFixed(1)} mm`;
+const fmtCoord = (mm, d) => (inch() ? mm / 25.4 : mm).toFixed(inch() ? d + 1 : d);
 const fx = v => { const s = (Math.round(v * 1000) / 1000).toFixed(3); return s === '-0.000' ? '0.000' : s; };
 function makeGcode() {
   const tl = state.tl, out = [];
   out.push('; Hot-wire toolpath – Hot-Wire Path Planner');
   out.push(`; source: ${state.name}`);
   out.push(`; drawing ${state.width.toFixed(1)} x ${state.height.toFixed(1)} mm, origin (0,0) = bottom-left corner of the drawing`);
-  out.push(`; feed ${S.feed} mm/min, pause ${S.pauseMs} ms at direction changes >= ${S.pauseAngle} deg`);
-  out.push(`; wire path ${fmtLen(tl.D[tl.n - 1])}, estimated time ${fmtTime(tl.total)}`);
+  out.push(`; feed ${+S.feed.toFixed(1)} mm/min, pause ${S.pauseMs} ms at direction changes >= ${S.pauseAngle} deg`);
+  out.push(`; wire path ${fmtMM(tl.D[tl.n - 1])}, estimated time ${fmtTime(tl.total)}`);
   out.push(...S.startGcode.split(/\r?\n/).filter(l => l.trim()));
-  out.push(`G1 F${S.feed}`);
+  out.push(`G1 F${+S.feed.toFixed(1)}`);
   const dwell = S.dwellUnit === 'ms' ? `G4 P${Math.round(S.pauseMs)}` : `G4 P${(S.pauseMs / 1000).toFixed(3)}`;
   for (let i = 1; i < tl.n; i++) {
     out.push(`G1 X${fx(tl.P[i][0])} Y${fx(tl.P[i][1])}`);
@@ -1097,7 +1115,7 @@ const cv = $('cv'), ctx = cv.getContext('2d');
 let staticLayer = document.createElement('canvas');
 const state = { name: null, text: null, ext: null, polys: [], contours: [], issues: [], moves: [], tl: null, width: 0, height: 0, pathBox: null, blockers: [] };
 const sim = { t: 0, playing: false, started: false, last: 0 };
-const view = { scale: 1, ox: 0, oy: 0 };
+const view = { scale: 1, ox: 0, oy: 0, auto: true }; // auto: keep the whole drawing fitted until the user pans/zooms
 
 function loadText(name, text) {
   state.name = name; state.text = text; state.ext = (name.split('.').pop() || '').toLowerCase();
@@ -1144,7 +1162,7 @@ function exportBlockers() {
   if (!state.tl || state.tl.n < 2) b.push('There is nothing to cut.');
   if (state.issues.length) b.push(`Fix the ${state.issues.length} problem${state.issues.length > 1 ? 's' : ''} marked in red first.`);
   if (state.width > S.maxX + 1e-6 || state.height > S.maxY + 1e-6)
-    b.push(`Drawing is ${state.width.toFixed(1)} × ${state.height.toFixed(1)} mm – larger than the machine (${S.maxX} × ${S.maxY} mm).`);
+    b.push(`Drawing is ${fmtSize(state.width, state.height)} – larger than the machine (${fmtSize(S.maxX, S.maxY)}).`);
   else if (state.pathBox && (state.pathBox.minx < -1e-6 || state.pathBox.miny < -1e-6 || state.pathBox.maxx > S.maxX + 1e-6 || state.pathBox.maxy > S.maxY + 1e-6))
     b.push('The toolpath leaves the machine area (0,0 – max X/Y).');
   return b;
@@ -1154,8 +1172,8 @@ function updatePanel() {
   const loaded = !!state.name && state.polys.length > 0;
   $('fileLabel').textContent = state.name || 'No file loaded';
   $('empty').hidden = !!state.name;
-  $('sWidth').textContent = loaded ? state.width.toFixed(1) + ' mm' : '–';
-  $('sHeight').textContent = loaded ? state.height.toFixed(1) + ' mm' : '–';
+  $('sWidth').textContent = loaded ? fmtDim(state.width) : '–';
+  $('sHeight').textContent = loaded ? fmtDim(state.height) : '–';
   const good = state.contours.filter(c => !c.bad);
   $('sParts').textContent = loaded ? good.filter(c => c.depth % 2 === 0).length : '–';
   $('sHoles').textContent = loaded ? good.filter(c => c.depth % 2 === 1).length : '–';
@@ -1187,9 +1205,8 @@ function updatePanel() {
   $('resetBtn').disabled = !has;
   const tooBig = loaded && (state.width > S.maxX || state.height > S.maxY);
   $('banner').style.display = tooBig ? 'block' : 'none';
-  $('banner').textContent = tooBig ? `Too large for the machine: ${state.width.toFixed(0)} × ${state.height.toFixed(0)} mm (limit ${S.maxX} × ${S.maxY} mm)` : '';
-  $('feedVal').textContent = S.feed + ' mm/min';
-  $('feed').value = S.feed;
+  $('banner').textContent = tooBig ? `Too large for the machine: ${fmtSize(state.width, state.height)} (limit ${fmtSize(S.maxX, S.maxY)})` : '';
+  syncFeedSlider();
   updateSimButton();
 }
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -1203,10 +1220,12 @@ function resize() {
   const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
   cv.width = Math.max(1, Math.round(w * dpr)); cv.height = Math.max(1, Math.round(h * dpr));
   staticLayer.width = cv.width; staticLayer.height = cv.height;
+  if (view.auto) fitView();
   renderStatic(); draw();
 }
 function fitView(box) {
   const w = cv.clientWidth, h = cv.clientHeight, pad = 48;
+  view.auto = !box;
   box = box || (state.polys.length ? bboxOf(state.polys.flatMap(p => p.pts).concat([[0, 0]], state.pathBox ? [[state.pathBox.minx, state.pathBox.miny], [state.pathBox.maxx, state.pathBox.maxy]] : [])) : { minx: 0, miny: 0, maxx: S.maxX, maxy: S.maxY });
   const bw = Math.max(box.maxx - box.minx, 1), bh = Math.max(box.maxy - box.miny, 1);
   view.scale = Math.max(1e-3, Math.min((w - 2 * pad) / bw, (h - 2 * pad) / bh));
@@ -1230,8 +1249,8 @@ function renderStatic() {
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
   c.fillStyle = cssVar('--canvas'); c.fillRect(0, 0, w, h);
   // grid
-  const raw = 60 / view.scale, pow = Math.pow(10, Math.floor(Math.log10(raw)));
-  const step = [1, 2, 5, 10].map(k => k * pow).find(s => s >= raw);
+  const uf = inch() ? 25.4 : 1, raw = 60 / view.scale / uf, pow = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 5, 10].map(k => k * pow).find(s => s >= raw) * uf; // mm between lines
   const [x0, y1] = toW(0, 0), [x1, y0] = toW(w, h);
   c.strokeStyle = cssVar('--grid'); c.lineWidth = 1; c.beginPath();
   for (let x = Math.ceil(x0 / step) * step; x <= x1; x += step) { const sx = Math.round(toS([x, 0])[0]) + 0.5; c.moveTo(sx, 0); c.lineTo(sx, h); }
@@ -1242,7 +1261,7 @@ function renderStatic() {
   c.setLineDash([6, 4]); c.strokeStyle = tooBig ? cssVar('--bad') : cssVar('--envelope'); c.lineWidth = 1.2;
   tracePts(c, [[0, 0], [S.maxX, 0], [S.maxX, S.maxY], [0, S.maxY]], true); c.stroke(); c.setLineDash([]);
   c.fillStyle = tooBig ? cssVar('--bad') : cssVar('--envelope'); c.font = '11px system-ui, sans-serif';
-  const [ex, ey] = toS([S.maxX, S.maxY]); c.textAlign = 'right'; c.fillText(`machine ${S.maxX} × ${S.maxY} mm`, ex - 4, ey - 6); c.textAlign = 'left';
+  const [ex, ey] = toS([S.maxX, S.maxY]); c.textAlign = 'right'; c.fillText(`machine ${fmtSize(S.maxX, S.maxY)}`, ex - 4, ey - 6); c.textAlign = 'left';
   // shapes: fill by nesting depth (even = material, odd = hole)
   const good = state.contours.filter(k => !k.bad).sort((a, b) => a.depth - b.depth);
   for (const k of good) { tracePts(c, k.ring.pts, true); c.fillStyle = k.depth % 2 ? cssVar('--hole') : cssVar('--part'); c.fill(); }
@@ -1317,7 +1336,7 @@ function draw() {
   const kind = pos.done ? 'finished' : pos.paused ? 'corner pause' : tl.K[pos.i];
   $('readout').hidden = false;
   $('readout').textContent =
-    `X ${pos.p[0].toFixed(2).padStart(8)}   Y ${pos.p[1].toFixed(2).padStart(8)}\n` +
+    `X ${fmtCoord(pos.p[0], 2).padStart(8)}   Y ${fmtCoord(pos.p[1], 2).padStart(8)}  ${uName()}\n` +
     `move   ${sim.started ? kind : 'waiting – press Simulate'}\n` +
     `time   ${fmtTime(Math.min(sim.t, tl.total))} / ${fmtTime(tl.total)}\n` +
     `done   ${(100 * pos.d / tl.D[tl.n - 1]).toFixed(1)} %`;
@@ -1358,7 +1377,12 @@ $('gcodeBtn').onclick = () => {
   a.download = state.name.replace(/\.[^.]+$/, '') + '.gcode'; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 };
-$('feed').oninput = e => { S.feed = +e.target.value; saveSettings(); rebuildTimeline(); updatePanel(); draw(); };
+$('feed').oninput = e => { S.feed = inch() ? +e.target.value * 25.4 : +e.target.value; saveSettings(); rebuildTimeline(); updatePanel(); draw(); };
+function syncFeedSlider() {
+  const el = $('feed');
+  if (inch()) { el.min = 0.5; el.max = 80; el.step = 0.1; el.value = (S.feed / 25.4).toFixed(1); $('feedVal').textContent = (S.feed / 25.4).toFixed(1) + ' in/min'; }
+  else { el.min = 10; el.max = 2000; el.step = 10; el.value = S.feed; $('feedVal').textContent = Math.round(S.feed) + ' mm/min'; }
+}
 $('simSpeed').oninput = () => updateSimButton();
 function readFile(f) {
   const r = new FileReader();
@@ -1382,29 +1406,52 @@ window.addEventListener('mouseup', () => { drag = null; cv.classList.remove('dra
 window.addEventListener('mousemove', e => {
   const r = cv.getBoundingClientRect();
   if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
-    const [x, y] = toW(e.clientX - r.left, e.clientY - r.top); $('cursorPos').textContent = `X ${x.toFixed(1)}  Y ${y.toFixed(1)} mm`;
+    const [x, y] = toW(e.clientX - r.left, e.clientY - r.top); $('cursorPos').textContent = `X ${fmtCoord(x, 1)}  Y ${fmtCoord(y, 1)} ${uName()}`;
   }
   if (!drag) return;
-  view.ox = drag.ox + e.clientX - drag.x; view.oy = drag.oy + e.clientY - drag.y; renderStatic(); draw();
+  view.ox = drag.ox + e.clientX - drag.x; view.oy = drag.oy + e.clientY - drag.y; view.auto = false; renderStatic(); draw();
 });
 cv.addEventListener('wheel', e => {
   e.preventDefault();
   const r = cv.getBoundingClientRect(), sx = e.clientX - r.left, sy = e.clientY - r.top, [wx, wy] = toW(sx, sy);
-  view.scale *= Math.exp(-e.deltaY * 0.0015);
+  view.scale *= Math.exp(-e.deltaY * 0.0015); view.auto = false;
   view.ox = sx - wx * view.scale; view.oy = sy + wy * view.scale; renderStatic(); draw();
 }, { passive: false });
 cv.addEventListener('dblclick', () => { fitView(); renderStatic(); draw(); });
-window.addEventListener('resize', resize);
+new ResizeObserver(resize).observe(cv); // also catches the page going from hidden to visible
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { renderStatic(); draw(); });
 // settings dialog
-const F = { maxX: 'setMaxX', maxY: 'setMaxY', pauseMs: 'setPause', pauseAngle: 'setAngle', dwellUnit: 'setDwell', clearance: 'setClear', curveTol: 'setTol', startGcode: 'setStart', endGcode: 'setEnd' };
-function fillSettings(src) { for (const [k, id] of Object.entries(F)) $(id).value = src[k]; }
+const F = { units: 'setUnits', maxX: 'setMaxX', maxY: 'setMaxY', pauseMs: 'setPause', pauseAngle: 'setAngle', dwellUnit: 'setDwell', clearance: 'setClear', curveTol: 'setTol', startGcode: 'setStart', endGcode: 'setEnd' };
+const LEN_KEYS = ['maxX', 'maxY', 'clearance', 'curveTol']; // stored in mm, shown in the dialog's unit
+const lenToField = (mm, units) => String(+(units === 'in' ? mm / 25.4 : mm).toFixed(units === 'in' ? 4 : 3));
+// a length field keeps its exact mm value until the user types a different number (no rounding drift)
+function fieldMM(el, units) {
+  if (el.dataset.mm !== undefined && el.value === lenToField(+el.dataset.mm, units)) return +el.dataset.mm;
+  const v = parseFloat(el.value); return isFinite(v) ? (units === 'in' ? v * 25.4 : v) : NaN;
+}
+function fillSettings(src) {
+  for (const [k, id] of Object.entries(F)) {
+    if (LEN_KEYS.includes(k)) { $(id).dataset.mm = src[k]; $(id).value = lenToField(src[k], src.units); }
+    else $(id).value = src[k];
+  }
+  setUnitLabels(src.units);
+}
+const setUnitLabels = units => document.querySelectorAll('#settingsDlg .u').forEach(s => { s.textContent = units; });
+$('setUnits').onchange = e => {
+  const to = e.target.value, from = to === 'in' ? 'mm' : 'in';
+  for (const k of LEN_KEYS) {
+    const el = $(F[k]), mm = fieldMM(el, from);
+    if (isFinite(mm)) { el.dataset.mm = mm; el.value = lenToField(mm, to); }
+  }
+  setUnitLabels(to);
+};
 $('settingsBtn').onclick = () => { fillSettings(S); $('settingsDlg').showModal(); };
 $('setCancel').onclick = () => $('settingsDlg').close();
-$('setDefaults').onclick = () => fillSettings(DEFAULTS);
+$('setDefaults').onclick = () => fillSettings({ ...DEFAULTS, units: $('setUnits').value });
 $('settingsForm').onsubmit = () => {
+  const units = $('setUnits').value;
   for (const [k, id] of Object.entries(F)) {
-    const v = $(id).value;
+    const v = LEN_KEYS.includes(k) ? fieldMM($(id), units) : $(id).value;
     S[k] = typeof DEFAULTS[k] === 'number' ? (isFinite(parseFloat(v)) && parseFloat(v) >= 0 ? parseFloat(v) : DEFAULTS[k]) : v;
   }
   S.maxX = Math.max(1, S.maxX); S.maxY = Math.max(1, S.maxY);
