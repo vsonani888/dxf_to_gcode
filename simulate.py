@@ -50,10 +50,12 @@ def run(contours, clearance=None):
     planner = Planner(contours, origin=(0.0, 0.0), clearance=clearance)
     moves = planner.plan()
 
-    n_parts = sum(1 for c in planner.contours if not c.is_hole)
-    n_holes = len(planner.contours) - n_parts
+    n_parts = sum(1 for c in planner.contours if c.material_inside)
+    n_holes = sum(1 for c in planner.contours if c.is_hole)
     lengths = path_lengths(moves)
     print(f"{n_parts} parts, {n_holes} holes")
+    if planner.merged:
+        print(f"merged {planner.merged} duplicate outline(s) - same curve drawn twice, cut once")
     for k, v in lengths.items():
         print(f"  {k:7s}: {v:9.1f}")
     print(f"  total  : {sum(lengths.values()):9.1f}")
@@ -67,7 +69,7 @@ def run(contours, clearance=None):
 
     for c in planner.contours:  # the shapes themselves
         x, y = c.poly.exterior.xy
-        ax.fill(x, y, color="white" if c.is_hole else "#d6e4f0", zorder=1)
+        ax.fill(x, y, color="#d6e4f0" if c.material_inside else "white", zorder=1)
         ax.plot(x, y, color="#5d6d7e", lw=0.8, zorder=2)
 
     for kind, pts in moves:  # planned path, faint

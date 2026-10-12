@@ -9,6 +9,8 @@ The wire can never lift, so every move cuts. Rules:
 Nesting is handled with a contour tree:
   depth 0 = part outline, depth 1 = hole in that part,
   depth 2 = a separate part sitting inside that hole, and so on.
+An outline drawn twice (a hole's edge plus the piece that fills that hole, as CAD exports
+often do) is merged and cut once; the inside of such a hole counts as material.
 """
 import heapq
 import math
@@ -28,14 +30,37 @@ class Contour:
         self.poly = Polygon(poly.exterior.coords)  # filled outline, no holes
         self.children = []
         self.depth = 0
+        # True when the drawing had this exact outline twice: a hole edge and the outline of
+        # a separate piece that fills that hole. The curve is cut once, and the inside of the
+        # hole is material, not scrap.
+        self.shared = False
 
     @property
     def is_hole(self):
         return self.depth % 2 == 1
 
+    @property
+    def material_inside(self):
+        return not self.is_hole or self.shared
 
-def build_tree(contours, eps):
+
+def merge_duplicates(nodes, tol):
+    """Drop outlines that are the same curve as one already kept (any start point / direction)."""
+    kept = []
+    for n in nodes:
+        same = next((k for k in kept
+                     if abs(k.poly.area - n.poly.area) <= 0.01 * k.poly.area
+                     and k.poly.hausdorff_distance(n.poly) <= tol), None)
+        if same is None:
+            kept.append(n)
+        else:
+            same.shared = True
+    return kept
+
+
+def build_tree(contours, eps, dup_tol):
     nodes = sorted((Contour(c) for c in contours), key=lambda n: -n.poly.area)
+    nodes = merge_duplicates(nodes, dup_tol)
     roots = []
     for i, node in enumerate(nodes):
         parent = None
@@ -178,7 +203,8 @@ class Planner:
         self.eps = diag * 1e-6
         self.clearance = clearance if clearance is not None else diag * 0.005
         self.origin = tuple(origin)
-        self.roots, self.contours = build_tree(contours, self.eps * 10)
+        self.roots, self.contours = build_tree(contours, self.eps * 10, dup_tol=diag * 5e-5)
+        self.merged = len(contours) - len(self.contours)  # duplicate outlines dropped
         self.moves = []  # list of (kind, [(x, y), ...]) with kind in travel / cut / bridge
 
     def plan(self):
@@ -210,6 +236,8 @@ class Planner:
         (the origin when root is None, otherwise the hole contour they sit in)."""
         if not parts:
             return
+        # links run through scrap foam, unless the hole is filled by a piece of its own
+        kind = "bridge" if root is not None and root.shared else "travel"
         router = Router(container, [p.poly for p in parts], self.clearance, self.eps)
         geoms = [Point(self.origin) if root is None else root.poly.exterior] + [p.poly.exterior for p in parts]
         owners = [root] + list(parts)
@@ -229,7 +257,7 @@ class Planner:
         for i, j, path in spanning_tree(len(geoms), link):
             owner = owners[i]
             self.detours.setdefault(None if owner is None else id(owner), []).append(
-                (path[0], "travel", path, owners[j], path[-1]))
+                (path[0], kind, path, owners[j], path[-1]))
 
         for part in parts:
             self._connect_holes(part)
